@@ -1,0 +1,639 @@
+#!/bin/bash
+
+set -x
+set -e
+#
+# template script for generating centos container for LXC
+
+#
+# lxc: linux Container library
+
+# Authors:
+# Daniel Lezcano <daniel.lezcano@free.fr>
+# Ramez Hanna <rhanna@informatiq.org>
+# Fajar A. Nugraha <github@fajar.net>
+
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+ # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+#Configurations
+arch=$(arch)
+arch=x86_64
+cache_base=/var/cache/lxc/centos/$arch
+default_path=/var/lib/lxc
+root_password=opscode
+lxc_network_type=veth
+lxc_network_link=lxcbr0
+
+# is this centos?
+[ -f /etc/centos-release ] && is_centos=true
+
+if [ "$arch" = "i686" ]; then
+    arch=i386
+fi
+
+configure_centos()
+{
+
+    # disable selinux in centos
+    mkdir -p $rootfs_path/selinux
+    echo 0 > $rootfs_path/selinux/enforce
+
+   # configure the network using the dhcp
+    cat <<EOF > ${rootfs_path}/etc/sysconfig/network-scripts/ifcfg-eth0
+DEVICE=eth0
+BOOTPROTO=dhcp
+ONBOOT=yes
+HOSTNAME=${UTSNAME}
+NM_CONTROLLED=no
+TYPE=Ethernet
+MTU=${MTU}
+DHCP_HOSTNAME=\`hostname\`
+EOF
+
+    # set the hostname
+    cat <<EOF > ${rootfs_path}/etc/sysconfig/network
+NETWORKING=yes
+HOSTNAME=${UTSNAME}
+EOF
+
+    # set minimal hosts
+    cat <<EOF > $rootfs_path/etc/hosts
+127.0.0.1 localhost 
+127.0.0.2 $name
+EOF
+
+    # set minimal fstab
+    cat <<EOF > $rootfs_path/etc/fstab
+/dev/root               /                       rootfs   defaults        0 0
+none                    /dev/shm                tmpfs    nosuid,nodev    0 0
+EOF
+
+    # create lxc compatibility init script
+    if [ "$release" = "6" ]; then 
+        cat <<EOF > $rootfs_path/etc/init/lxc-sysinit.conf
+start on startup
+env container
+
+pre-start script
+        if [ "x$container" != "xlxc" -a "x$container" != "xlibvirt" ]; then
+                stop;
+        fi
+        telinit 3
+        initctl start tty TTY=console
+        exit 0;
+end script
+EOF
+    elif [ "$release" = "5" ]; then 
+        cat <<EOF > $rootfs_path/etc/rc.d/lxc.sysinit
+#! /bin/bash
+rm -f /etc/mtab /var/run/*.{pid,lock} /var/lock/subsys/*
+rm -rf {/,/var}/tmp/* 
+echo "/dev/root               /                       rootfs   defaults        0 0" > /etc/mtab
+exit 0
+EOF
+        chmod 755 $rootfs_path/etc/rc.d/lxc.sysinit
+        sed -i 's|si::sysinit:/etc/rc.d/rc.sysinit|si::bootwait:/etc/rc.d/lxc.sysinit|'  $rootfs_path/etc/inittab
+        sed -i 's|^1:|co:2345:respawn:/sbin/mingetty console\n1:|' $rootfs_path/etc/inittab
+        sed -i 's|^\([56]:\)|#\1|' $rootfs_path/etc/inittab
+    fi
+
+    dev_path="${rootfs_path}/dev"
+    rm -rf $dev_path
+    mkdir -p $dev_path
+    mknod -m 666 ${dev_path}/null c 1 3
+    mknod -m 666 ${dev_path}/zero c 1 5
+    mknod -m 666 ${dev_path}/random c 1 8
+    mknod -m 666 ${dev_path}/urandom c 1 9
+    mkdir -m 755 ${dev_path}/pts
+    mkdir -m 1777 ${dev_path}/shm
+    mknod -m 666 ${dev_path}/tty c 5 0
+    mknod -m 666 ${dev_path}/tty0 c 4 0
+    mknod -m 666 ${dev_path}/tty1 c 4 1
+    mknod -m 666 ${dev_path}/tty2 c 4 2
+    mknod -m 666 ${dev_path}/tty3 c 4 3
+    mknod -m 666 ${dev_path}/tty4 c 4 4
+    mknod -m 600 ${dev_path}/console c 5 1
+    mknod -m 666 ${dev_path}/full c 1 7
+    mknod -m 600 ${dev_path}/initctl p
+    mknod -m 666 ${dev_path}/ptmx c 5 2
+
+    echo "setting root passwd to $root_password"
+    echo "root:$root_password" | chroot $rootfs_path chpasswd
+
+    return 0
+}
+
+configure_centos_init()
+{
+    sed -i 's|.sbin.start_udev||' ${rootfs_path}/etc/rc.sysinit
+    sed -i 's|.sbin.start_udev||' ${rootfs_path}/etc/rc.d/rc.sysinit
+    if [ "$release" = "6" ]; then 
+        chroot ${rootfs_path} chkconfig udev-post off
+    fi
+    chroot ${rootfs_path} chkconfig network on
+
+    
+    cat <<EOF > $rootfs_path/etc/rc.local
+current_hostname=\$(hostname)
+cat<<EOS > /etc/hosts
+# /usr/bin/lxc-clone sets the host file all wacky on a clone...
+127.0.0.1   localhost
+127.0.1.1   \${current_hostname}.<%=node['resolver']['search']%> \$current_hostname
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOS
+touch /var/lock/subsys/local
+EOF
+
+}
+
+download_centos()
+{
+
+    # check the mini centos was not already downloaded
+    INSTALL_ROOT=$cache/partial
+    mkdir -p $INSTALL_ROOT
+    if [ $? -ne 0 ]; then
+	echo "Failed to create '$INSTALL_ROOT' directory"
+	return 1
+    fi
+
+    # download a mini centos into a cache
+    echo "Downloading centos minimal ..."
+    YUM="yum --disableplugin=fastestmirror --installroot $INSTALL_ROOT -y --nogpgcheck"
+    PKG_LIST="yum initscripts passwd rsyslog vim-minimal dhclient chkconfig rootfiles policycoreutils openssh-server sudo wget"
+    
+    # use temporary repository definition
+
+     REPO_FILE=$INSTALL_ROOT/etc/yum.repos.d/lxc-centos-temp.repo
+     mkdir -p $(dirname $REPO_FILE)
+     basearch=x86_64
+     releasever=6
+cat <<EOF > $REPO_FILE
+[base]
+name=CentOS-$releasever - Base
+mirrorlist=http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=os
+#baseurl=http://mirror.centos.org/centos/$releasever/os/$basearch/
+gpgcheck=1
+gpgkey=http://mirror.centos.org/centos/RPM-GPG-KEY-CentOS-6
+protect=1
+
+#released updates 
+[update]
+name=CentOS-$releasever - Updates
+mirrorlist=http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=updates
+#baseurl=http://mirror.centos.org/centos/$releasever/updates/$basearch/
+gpgcheck=1
+gpgkey=http://mirror.centos.org/centos/RPM-GPG-KEY-CentOS-6
+protect=1 
+
+#additional packages that may be useful
+[extras]
+name=CentOS-$releasever - Extras
+mirrorlist=http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=extras
+#baseurl=http://mirror.centos.org/centos/$releasever/extras/$basearch/
+gpgcheck=1
+gpgkey=http://mirror.centos.org/centos/RPM-GPG-KEY-CentOS-6
+protect=0 
+EOF
+
+    
+#     REPO_FILE=$INSTALL_ROOT/etc/yum.repos.d/lxc-centos-temp.repo
+#     mkdir -p $(dirname $REPO_FILE)
+#     cat <<EOF > $REPO_FILE
+# [localbase]
+# name=CentOS-$release - Base
+# baseurl=http://fileserver.training:8910/CentOS/$release/os/$arch
+# gpgcheck=1
+# gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
+
+# [localupdates]
+# name=CentOS-$release - Updates
+# baseurl=http://fileserver.training:8910/CentOS/$release/updates/$arch
+# gpgcheck=1
+# gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
+# EOF
+
+    # create minimal device nodes, needed for "yum install" and "yum update" process
+    mkdir -p $INSTALL_ROOT/dev
+    mknod -m 666 $INSTALL_ROOT/dev/null c 1 3
+    mknod -m 666 $INSTALL_ROOT/dev/urandom c 1 9
+
+    $YUM install $PKG_LIST
+
+    if [ $? -ne 0 ]; then
+        echo "Failed to download the rootfs, aborting."
+        return 1
+    fi
+
+    # use same nameservers as hosts, needed for "yum update later"
+    cp /etc/resolv.conf $INSTALL_ROOT/etc/
+
+    # need to redo the process for centos5 using the newly-installed yum
+    # due to rpmdb version difference
+    if [ "$release" = "5" -o "$release" = "5" ]; then
+        mv $REPO_FILE $REPO_FILE.tmp
+        mkdir $INSTALL_ROOT/etc/yum.repos.disabled
+        mv $INSTALL_ROOT/etc/yum.repos.d/*.repo $INSTALL_ROOT/etc/yum.repos.disabled/
+        mv $REPO_FILE.tmp $REPO_FILE
+        mkdir -p $INSTALL_ROOT/$INSTALL_ROOT/etc
+        cp /etc/resolv.conf $INSTALL_ROOT/$INSTALL_ROOT/etc/
+        mkdir -p $INSTALL_ROOT/$INSTALL_ROOT/dev
+        mknod -m 666 $INSTALL_ROOT/$INSTALL_ROOT/dev/null c 1 3
+        mknod -m 666 $INSTALL_ROOT/$INSTALL_ROOT/dev/urandom c 1 9
+        mkdir -p $INSTALL_ROOT/$INSTALL_ROOT/var/cache/yum
+        cp -al $INSTALL_ROOT/var/cache/yum/* $INSTALL_ROOT/$INSTALL_ROOT/var/cache/yum/
+        chroot $INSTALL_ROOT $YUM install $PKG_LIST
+
+        if [ $? -ne 0 ]; then
+            echo "Failed to download the rootfs, aborting."
+            return 1
+        fi
+        mv $INSTALL_ROOT/$INSTALL_ROOT $INSTALL_ROOT.tmp
+        rm -rf $INSTALL_ROOT
+        mv $INSTALL_ROOT.tmp $INSTALL_ROOT
+    fi
+
+    # rm -f $REPO_FILE
+    sed -i 's|enabled=.*|enabled=0|' $INSTALL_ROOT/etc/yum/pluginconf.d/fastestmirror.conf
+# use the internets
+    cat <<EOF > $REPO_FILE
+[base]
+name=CentOS-$releasever - Base
+mirrorlist=http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=os
+#baseurl=http://mirror.centos.org/centos/$releasever/os/$basearch/
+gpgcheck=1
+gpgkey=http://mirror.centos.org/centos/RPM-GPG-KEY-centos4
+protect=1
+
+#released updates 
+[update]
+name=CentOS-$releasever - Updates
+mirrorlist=http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=updates
+#baseurl=http://mirror.centos.org/centos/$releasever/updates/$basearch/
+gpgcheck=1
+gpgkey=http://mirror.centos.org/centos/RPM-GPG-KEY-centos4
+protect=1 
+
+#additional packages that may be useful
+[extras]
+name=CentOS-$releasever - Extras
+mirrorlist=http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=extras
+#baseurl=http://mirror.centos.org/centos/$releasever/extras/$basearch/
+gpgcheck=1
+gpgkey=http://mirror.centos.org/centos/RPM-GPG-KEY-centos4
+protect=0 
+EOF
+
+
+# or a local repo
+#     cat <<EOF > $REPO_FILE
+# [localbase]
+# name=CentOS-$release - Base
+# baseurl=http://fileserver.training:8910/CentOS/$release/os/$arch
+# gpgcheck=1
+# gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
+
+# [localupdates]
+# name=CentOS-$release - Updates
+# baseurl=http://fileserver.training:8910/CentOS/$release/updates/$arch
+# gpgcheck=1
+# gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
+
+# [localextras]
+# name=CentOS-$release - Extras
+# baseurl=http://fileserver.training:8910/CentOS/$release/extras/$arch
+# gpgcheck=1
+# gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
+# EOF
+    rm -rf $INSTALL_ROOT/etc/yum.repos.d/CentOS-Base.repo
+    $YUM clean packages
+    rm -rf $INSTALL_ROOT/var/cache/yum/*
+    if [ ! -e $INSTALL_ROOT/var/lib/rpm/Packages -a -e $INSTALL_ROOT/$HOME/.rpmdb/Packages ]; then
+        mv $INSTALL_ROOT/$HOME/.rpmdb/[A-Z]* $INSTALL_ROOT/var/lib/rpm/
+        rm -rf $INSTALL_ROOT/$HOME/.rpmdb
+        chroot $INSTALL_ROOT rpm --rebuilddb -v
+        chroot $INSTALL_ROOT rpm --quiet -q yum
+    fi
+
+    mv "$INSTALL_ROOT" "$cache/rootfs"
+    echo "Download complete."
+
+    return 0
+}
+
+copy_centos()
+{
+
+    # make a local copy of the mini centos
+    echo -n "Copying rootfs to $rootfs_path ..."
+    #cp -a $cache/rootfs-$arch $rootfs_path || return 1
+    # i prefer rsync (no reason really)
+    mkdir -p $rootfs_path
+    rsync -a $cache/rootfs/ $rootfs_path/
+    return 0
+}
+
+update_centos()
+{
+    YUM="chroot $cache/rootfs yum -y --nogpgcheck"
+    $YUM update
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    $YUM clean packages
+}
+
+install_centos()
+{
+    mkdir -p /var/lock/subsys/
+    (
+	flock -x 200
+	if [ $? -ne 0 ]; then
+	    echo "Cache repository is busy."
+	    return 1
+	fi
+
+	echo "Checking cache download in $cache/rootfs ... "
+	if [ ! -e "$cache/rootfs" ]; then
+	    download_centos
+	    if [ $? -ne 0 ]; then
+		echo "Failed to download 'centos base'"
+		return 1
+	    fi
+        else
+	    echo "Cache found. Updating..."
+            update_centos
+	    if [ $? -ne 0 ]; then
+		echo "Failed to update 'centos base', continuing with last known good cache"
+            else
+                echo "Update finished"
+	    fi
+	fi
+
+	echo "Copy $cache/rootfs to $rootfs_path ... "
+	copy_centos
+	if [ $? -ne 0 ]; then
+	    echo "Failed to copy rootfs"
+	    return 1
+	fi
+
+	return 0
+
+	) 200>/var/lock/subsys/lxc
+
+    return $?
+}
+
+copy_configuration()
+{
+
+    mkdir -p $config_path
+    cat <<EOF >> $config_path/config
+lxc.utsname = $name
+lxc.tty = 4
+lxc.pts = 1024
+lxc.rootfs = $rootfs_path
+lxc.mount  = $config_path/fstab
+#example networking setup, uncomment to enable
+#lxc.network.type = $lxc_network_type
+#lxc.network.flags = up
+#lxc.network.link = $lxc_network_link
+#lxc.network.name = eth0
+#lxc.network.mtu = 1500
+#cgroups
+lxc.cgroup.devices.deny = a
+# /dev/null and zero
+lxc.cgroup.devices.allow = c 1:3 rwm
+lxc.cgroup.devices.allow = c 1:5 rwm
+# consoles
+lxc.cgroup.devices.allow = c 5:1 rwm
+lxc.cgroup.devices.allow = c 5:0 rwm
+lxc.cgroup.devices.allow = c 4:0 rwm
+lxc.cgroup.devices.allow = c 4:1 rwm
+# /dev/{,u}random
+lxc.cgroup.devices.allow = c 1:9 rwm
+lxc.cgroup.devices.allow = c 1:8 rwm
+lxc.cgroup.devices.allow = c 136:* rwm
+lxc.cgroup.devices.allow = c 5:2 rwm
+# rtc
+lxc.cgroup.devices.allow = c 254:0 rwm
+EOF
+
+    cat <<EOF > $config_path/fstab
+proc            proc         proc    nodev,noexec,nosuid 0 0
+devpts          dev/pts      devpts defaults 0 0
+sysfs           sys          sysfs defaults  0 0
+EOF
+
+    if [ $? -ne 0 ]; then
+	echo "Failed to add configuration"
+	return 1
+    fi
+
+    return 0
+}
+
+clean()
+{
+
+    if [ ! -e $cache ]; then
+	exit 0
+    fi
+
+    # lock, so we won't purge while someone is creating a repository
+    (
+	flock -x 200
+	if [ $? != 0 ]; then
+	    echo "Cache repository is busy."
+	    exit 1
+	fi
+
+	echo -n "Purging the download cache for centos-$release..."
+	rm --preserve-root --one-file-system -rf $cache && echo "Done." || exit 1
+	exit 0
+
+    ) 200>/var/lock/subsys/lxc
+}
+
+usage()
+{
+    cat <<EOF
+usage:
+    $1 -n|--name=<container_name>
+        [-p|--path=<path>] [-c|--clean] [-R|--release=<CentOS_release>] [-A|--arch=<arch of the container>]
+        [ -S | --auth-key <keyfile>] [ -P | --priv-key <keyfile>]
+        [-h|--help]
+Mandatory args:
+  -n,--name         container name, used to as an identifier for that container from now on
+Optional args:
+  -p,--path         path to where the container rootfs will be created, defaults to /var/lib/lxc. The container config will go under /var/lib/lxc in that case
+  -c,--clean        clean the cache
+  -R,--release      Centos release for the new container. if the host is Centos, then it will defaultto the host's release.
+  -A,--arch         NOT USED YET. Define what arch the container will be [i686,x86_64]
+  -h,--help         print this help
+  auth-key: SSH Public key file to inject into container
+  priv-key: SSH Private key file to inject into container
+EOF
+    return 0
+}
+
+options=$(getopt -o hp:n:cR:S:Z:c -l help,path:,name:,clean,release:,auth-key:,priv-key:,chef -- "$@")
+if [ $? -ne 0 ]; then
+    usage $(basename $0)
+    exit 1
+fi
+eval set -- "$options"
+
+while true
+do
+    case "$1" in
+	-h|--help)      usage $0 && exit 0;;
+	-p|--path)      path=$2; shift 2;;
+	-n|--name)      name=$2; shift 2;;
+        -c|--chef)      chef=1; shift 1;;
+	-c|--clean)     clean=$2; shift 2;;
+	-R|--release)   release=$2; shift 2;;
+        -S|--auth-key)  auth_key=$2; shift 2;;
+        -Z|--priv-key)  priv_key=$2; shift 2;;
+	--)             shift 1; break ;;
+	*)              break ;;
+    esac
+done
+
+if [ ! -z "$clean" -a -z "$path" ]; then
+    clean || exit 1
+    exit 0
+fi
+
+type yum >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "'yum' command is missing"
+    exit 1
+fi
+
+if [ -z "$path" ]; then
+    path=$default_path
+fi
+
+if [ -z "$release" ]; then
+    if [ "$is_centos" ]; then
+        release=$(cat /etc/centos-release |awk '/^CentOS/ {print $3}' |awk -F. '{print $1}')
+    else
+        echo "This is not a CentOS host and release missing, defaulting to 6. use -R|--release to specify release"
+        release=6
+    fi
+fi
+
+if [ "$(id -u)" != "0" ]; then
+    echo "This script should be run as 'root'"
+    exit 1
+fi
+
+
+rootfs_path=$path/rootfs
+config_path=$default_path/$name
+cache=$cache_base/$release
+
+revert()
+{
+    echo "Interrupted, so cleaning up"
+    lxc-destroy -n $name
+    # maybe was interrupted before copy config
+    rm -rf $path
+    rm -rf $default_path/$name
+    echo "exiting..."
+    exit 1
+}
+
+
+# finish setting up the user in the container by injecting ssh key and
+# adding sudo group membership.
+# passed-in user is either 'ubuntu' or the user to bind in from host.
+finalize_user()
+{
+    user=opscode
+
+    chroot $rootfs_path useradd --create-home -s /bin/bash opscode
+    echo "opscode:opscode" | chroot $rootfs_path chpasswd
+
+    echo "$user ALL=(ALL:ALL) NOPASSWD: ALL" >> $rootfs_path/etc/sudoers.d/$user
+    chmod 0440 $rootfs_path/etc/sudoers.d/$user
+
+    u_path="/home/${user}/.ssh"
+    root_u_path="$rootfs_path/$u_path"
+    mkdir -p $root_u_path
+    echo StrictHostKeyChecking false > $root_u_path/config
+    echo "auth_key=$auth_key"
+    if [ -n "$auth_key" ] && [ -f "$auth_key" ]; then
+        cp $auth_key "$root_u_path/authorized_keys"
+        chroot $rootfs_path chown -R ${user}: "$u_path"
+        echo "Inserted SSH public key from $auth_key into /home/${user}/.ssh/authorized_keys"
+    fi
+    echo "priv_key=$priv_key"
+    if [ -n "$priv_key" ] && [ -f "$priv_key" ]; then
+        cp $priv_key "$root_u_path/id_rsa"
+        chmod 0755 "$root_u_path"
+        chmod 0600 "$root_u_path/id_rsa"
+        echo "Inserted SSH private key from $priv_key into /home/${user}/.ssh/id_rsa"
+    fi
+    cp -a "$root_u_path" "$rootfs_path/root/.ssh"
+    chown -R root:root "$root_u_path" "$rootfs_path/root/.ssh"
+    chroot $rootfs_path chown -R ${user}: "$u_path"
+    echo "Inserted SSH private key from $root_u_path to $rootfs_path/root/.ssh"
+    return 0
+}
+
+trap revert SIGHUP SIGINT SIGTERM
+
+copy_configuration
+if [ $? -ne 0 ]; then
+    echo "failed write configuration file"
+    exit 1
+fi
+
+install_centos
+if [ $? -ne 0 ]; then
+    echo "failed to install centos"
+    exit 1
+fi
+
+configure_centos
+if [ $? -ne 0 ]; then
+    echo "failed to configure centos for a container"
+    exit 1
+fi
+
+finalize_user
+if [ $? -ne 0 ]; then
+    echo "failed to finalize the user for a centos container"
+    exit 1
+fi
+
+
+
+configure_centos_init
+
+if [ ! -z $clean ]; then
+    clean || exit 1
+    exit 0
+fi
+echo "container rootfs and config created, default root password is '$root_password'"
+echo "edit the config file to check/enable networking setup"

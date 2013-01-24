@@ -1,0 +1,49 @@
+#!/opt/chef/embedded/bin/ruby
+require 'timeout'
+require 'thread'
+
+students = ARGV
+
+unless students
+  puts "#{$0} student1 studentfoo mythirdstudent"
+  puts "You must provie a list of students to delete their workstation and targets for"
+  exit 1
+end
+
+def destroy_workstation(name)
+  puts "Deleting #{name} from chef"
+  system("knife client delete #{name} -y")
+  system("knife node delete #{name} -y")
+  system("delete_org #{name.split('-').first}")
+  destroy_lxc name
+end
+
+def destroy_lxc(name)
+  puts "Destroying container #{name}"
+  system("lxc-destroy -n #{name} -f")
+end
+
+threads = []
+students.each do |student|
+  threads << Thread.new do
+    destroy_workstation "#{student}-workstation"
+    destroy_lxc "#{student}-target1"
+    destroy_lxc "#{student}-target2"
+  end
+end
+threads.each { |t| t.join }
+
+# ready = []
+# workstations = students.map{|s| "#{s}-workstation"}
+# while true
+#   break if workstations - ready == []
+#   lxc_ps = "lxc-ps --lxc | grep -v "
+#   ready = %x{#{lxc_ps}}.lines.grep(/Xtightvnc/).map{|l| l.match(/(\w-?)+/)[0]}
+#   notready = workstations - ready
+#   sleep 1
+#   print "\r                                                                          "
+#   print "\r"
+#   print "Waiting [#{notready.join ', '}]" if notready.any?
+#   print " Ready [#{ready.join ', '}]" if ready.any?
+# end 
+

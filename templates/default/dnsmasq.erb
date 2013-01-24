@@ -1,0 +1,6 @@
+#!/bin/sh
+# Change '--config-file' to '-C /usr/local/etc/dnsmasq.conf'
+if (echo $* | grep nm-dns-dnsmasq); then
+   exec /usr/sbin/dnsmasq `echo $* | sed 's:$: --server=//<%=node['virtualization']['hostip']%> --server=/<%=node['virtualization']['domain']%>/<%=node['virtualization']['hostip']%> --local=/<%=node['virtualization']['network'].split('.').reverse.join('.')%>.in-addr.arpa/<%=node['virtualization']['hostip']%> --local=/local/127.0.0.1#5353 --log-queries:'`
+fi
+exec /usr/sbin/dnsmasq `echo $*`

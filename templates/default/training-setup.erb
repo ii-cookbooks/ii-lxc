@@ -1,0 +1,50 @@
+#!/opt/chef/embedded/bin/ruby
+require 'timeout'
+require 'thread'
+
+students = ARGV
+
+unless students
+  puts "#{$0} student1 studentfoo mythirdstudent"
+  puts "You must provie a list of students to delete their workstation and targets for"
+  exit 1
+end
+
+def build_workstation(name)
+  puts "Building #{name}"
+  system("lxc-clone -o model-workstation -n #{name}")
+  IO.popen("lxc-start -d -n #{name}")
+end
+
+def build_target(name)
+  puts "Building #{name}"
+  system("lxc-clone -o model-target -n #{name}")
+  # twe need the above to finish before we start it
+  # system("lxc-clone -o model-target -n #{name}")
+  IO.popen("lxc-start -d -n #{name}")
+end
+
+threads = []
+students.each do |student|
+  threads << Thread.new do
+    build_workstation("#{student}-workstation")
+    build_target("#{student}-target1")
+    build_target("#{student}-target2")
+  end
+end
+threads.each { |t| t.join }
+
+# ready = []
+# workstations = students.map{|s| "#{s}-workstation"}
+# while true
+#   break if workstations - ready == []
+#   lxc_ps = "lxc-ps --lxc | grep -v "
+#   ready = %x{#{lxc_ps}}.lines.grep(/Xtightvnc/).map{|l| l.match(/(\w-?)+/)[0]}
+#   notready = workstations - ready
+#   sleep 1
+#   print "\r                                                                          "
+#   print "\r"
+#   print "Waiting [#{notready.join ', '}]" if notready.any?
+#   print " Ready [#{ready.join ', '}]" if ready.any?
+# end 
+

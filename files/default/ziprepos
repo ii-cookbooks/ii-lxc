@@ -1,0 +1,6 @@
+#!/bin/bash
+
+for ws in /var/lib/lxc/workstation*
+do
+    (cd ${ws}/rootfs/home/opscode && zip -r /srv/www/fileserver/`basename $ws`-chef-repo.zip chef-repo -x chef-repo/.chef/\*)
+done
