@@ -2,7 +2,13 @@ default['virtualization']['qemu']['vnc_listen'] = "0.0.0.0"
 default['virtualization']['lxc']['network_link'] = "lxcbr0"
 
 default['virtualization']['network'] = '10.12.13'
-default['virtualization']['domain'] = node['resolver']['search'] || 'foglab'
+default['virtualization']['domain'] = case node['resolver']
+                                      when nil # we aren't using the resolver cookbook
+                                        'virtdomain'
+                                      else # we are using the resolver cookbook
+                                        node['resolver']['search']
+                                      end
+
 default['virtualization']['hostip'] = "#{node['virtualization']['network']}.1"
 
 default['virtualization']['lxc']['addr'] = "#{node['virtualization']['network']}.1"
