@@ -16,7 +16,7 @@ package "python-vm-builder"
 
 package "virtinst"
 
-include_recipe "virtualization::lxc"
+include_recipe "ii-lxc::lxc"
 
 # Because ubuntu starts services by default when you install a package,
 # the configs must be inplace before we install lxc,
