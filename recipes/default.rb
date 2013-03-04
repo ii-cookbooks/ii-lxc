@@ -12,6 +12,16 @@
 # Mayb need to put this inside the cookbook 8(
 # end
 
+# should this be in a chef_client_via_databags cookbook or maybe  a library?
+cc = search('chef',"*:*")
+node.normal['chef_client']['version']=cc.map{|v| v['version']}.flatten.uniq.sort.last
+Chef::Log.fatal "CHEF_CLIENT_VERNSION: #{node['chef_client']['version']}"
+node.normal['chef_client']['deb'] = search('chef',"version:#{node['chef_client']['version']} AND arch:x86_64 AND os_ubuntu:12.04").first
+# multi attribute search appears broken on chef-search-solo
+#node.normal['chef_client']['deb'] = search('chef',"os_ubuntu:12.04").select{|c| c['version'] == node['chef_client']['version']}.select{|c| c['arch'] == 'x86_64'}
+#node.normal['chef_client']['deb'] = search('chef',"version:#{node['chef_client']['version']}").first
+Chef::Log.fatal "CHEF_CLIENT_DEB: #{node['chef_client']['deb']}"
+
 package "python-vm-builder"
 
 package "virtinst"
@@ -107,6 +117,8 @@ end
 execute "ssh-keygen  -q -f /etc/lxc/ssh_id_rsa -P '' -C 'lxc-ssh-key'" do
   not_if {File.exists? "/etc/lxc/ssh_id_rsa.pub"}
 end
+
+Chef::Log.fatal node.normal['chef_client']['deb']
 
 template "/usr/lib/lxc/templates/lxc-training" do
   source "lxc-training.erb"

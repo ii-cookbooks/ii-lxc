@@ -745,8 +745,8 @@ chmod 755 $rootfs/etc/rc.local
 
 if [ -n "$chef" ]; then
     chroot $rootfs apt-get --force-yes -y install curl language-pack-en dictionaries-common
-    chroot $rootfs /bin/bash -c 'cd /tmp && curl http://<%= node['virtualization']['hostip'] %>/chef-full-10.16.2-1.x86_64.deb > /tmp/chef-full-10.16.2-1.x86_64.deb'
-    chroot $rootfs /bin/bash -c 'cd /tmp && dpkg -i ./chef-full-10.16.2-1.x86_64.deb'
+    chroot $rootfs /bin/bash -c 'cd /tmp && curl http://<%= node['virtualization']['hostip'] %>/<%=node['chef_client']['deb']['filename']%> > /tmp/<%=node['chef_client']['deb']['filename']%>'
+    chroot $rootfs /bin/bash -c 'cd /tmp && dpkg -i ./<%=node['chef_client']['deb']['filename']%>'
     mkdir -p $rootfs/etc/chef
     cp /root/.chef/training-validation.pem $rootfs/etc/chef/validation.pem
     cat <<EOF > $rootfs/etc/chef/client.rb
